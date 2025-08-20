@@ -126,9 +126,24 @@ Each medication includes:
 - **Push Notifications** - Drug updates and alerts
 - **Print/Export** - Generate calculation reports
 
-## ⚠️ Medical Disclaimer
+## ⚠️ CRITICAL MEDICAL DISCLAIMER
 
-This application is designed as a clinical decision support tool for qualified healthcare professionals. It should not replace clinical judgment, and all calculations should be verified before medication administration. The developers are not responsible for any clinical decisions made using this tool.
+**FOR HEALTHCARE PROFESSIONALS ONLY**
+
+This application is a clinical decision support tool intended EXCLUSIVELY for qualified healthcare professionals with appropriate training in pediatric medicine and pharmacology. 
+
+**IMPORTANT LIMITATIONS:**
+- This software is NOT a substitute for clinical judgment, medical training, or professional medical advice
+- All calculations MUST be independently verified before medication administration
+- Users remain fully responsible for all clinical decisions and patient safety
+- This software has not been evaluated by regulatory authorities as a medical device
+- No warranty is provided - use at your own professional risk
+
+**LIABILITY:** The developers, contributors, and distributors accept NO LIABILITY for any direct, indirect, incidental, or consequential damages arising from the use of this application, including but not limited to patient harm, medical errors, or adverse outcomes.
+
+**COMPLIANCE:** Users are responsible for ensuring compliance with local regulations, institutional policies, and professional standards. In emergency situations, follow established protocols and do not rely solely on this application.
+
+**By using this application, you acknowledge that you are a qualified healthcare professional and accept full responsibility for all clinical decisions.**
 
 ## 📱 Installation
 

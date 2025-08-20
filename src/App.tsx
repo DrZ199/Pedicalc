@@ -1,43 +1,36 @@
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { CalculatorsScreenSimple } from '@/components/CalculatorsScreenSimple'
 import { SettingsScreen } from '@/components/SettingsScreen'
+import { MedicalDisclaimer, useMedicalDisclaimer } from '@/components/MedicalDisclaimer'
+import { HomeScreen } from '@/components/HomeScreen'
+import { PatientInputScreen } from '@/components/PatientInputScreen'
+import { MedicationSelectionScreen } from '@/components/MedicationSelectionScreen'
+import { ResultsScreen } from '@/components/ResultsScreen'
 import { SettingsProvider, useSettings } from '@/contexts/SettingsContext'
+import { ErrorBoundary, SimpleErrorBoundary, handleAsyncError } from '@/components/ErrorBoundary'
 import { type Medication } from '@/lib/medication-database'
 import { 
-  fetchAllDrugs, 
-  searchDrugs, 
-  getDrugsBySystem, 
-  getSystems,
-  getClasses 
+  fetchAllDrugs
 } from '@/lib/supabase'
 import { 
   convertPediatricDrugsToMedications, 
-  extractCategoriesFromDrugs, 
-  extractSystemsFromDrugs 
+  extractCategoriesFromDrugs
 } from '@/lib/supabase-adapter'
+import {
+  validatePatientData,
+  type ValidationResult
+} from '@/lib/medical-validation'
+import {
+  calculateSafeDosage
+} from '@/lib/medical-calculations'
 import { 
-  Calculator, 
-  Clock, 
-  Pill, 
-  Search,
-  Heart,
+  Stethoscope,
   AlertTriangle,
-  CheckCircle,
-  Home,
-  Settings,
-  History,
-  ArrowLeft,
-  Plus,
-  Stethoscope
+  Wifi,
+  WifiOff
 } from 'lucide-react'
 
 
@@ -61,18 +54,27 @@ interface CalculationResult {
   frequency: string
   medication: string
   volume?: string
+  validationErrors?: string[]
+  validationWarnings?: string[]
+  isRecommended?: boolean
 }
 
 export default function App() {
   return (
-    <SettingsProvider>
-      <AppContent />
-    </SettingsProvider>
+    <ErrorBoundary onError={(error, errorInfo) => {
+      console.error('App-level error:', error, errorInfo)
+      // In production, send to error reporting service
+    }}>
+      <SettingsProvider>
+        <AppContent />
+      </SettingsProvider>
+    </ErrorBoundary>
   )
 }
 
 function AppContent() {
   const { settings } = useSettings()
+  const { needsDisclaimer, acceptDisclaimer, declineDisclaimer } = useMedicalDisclaimer()
   const [currentScreen, setCurrentScreen] = useState<Screen>('home')
   const [patientData, setPatientData] = useState<PatientData>({
     age: '',
@@ -85,54 +87,123 @@ function AppContent() {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('ALL')
   const [progress, setProgress] = useState(0)
-  const [favorites, setFavorites] = useState<number[]>([1, 2, 3]) // Mock favorites
+  const [favorites] = useState<number[]>([1, 2, 3]) // Mock favorites
+  const [patientValidation, setPatientValidation] = useState<ValidationResult | null>(null)
   const [medications, setMedications] = useState<Medication[]>([])
   const [categories, setCategories] = useState<string[]>([])
-  const [systems, setSystems] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [retryCount, setRetryCount] = useState(0)
 
-  // Load medications from Supabase on app start
+  // Monitor online status
   useEffect(() => {
-    async function loadMedications() {
-      try {
-        setIsLoading(true)
-        setError(null)
-        
-        console.log('Loading medications from Supabase...')
-        const drugs = await fetchAllDrugs()
-        
-        if (drugs.length === 0) {
-          throw new Error('No medications found in database')
-        }
-        
-        console.log(`Loaded ${drugs.length} medications from Supabase`)
-        
-        // Convert to app format
-        const convertedMedications = convertPediatricDrugsToMedications(drugs)
-        setMedications(convertedMedications)
-        
-        // Extract categories and systems
-        const extractedCategories = extractCategoriesFromDrugs(drugs)
-        const extractedSystems = extractSystemsFromDrugs(drugs)
-        
-        setCategories(extractedCategories)
-        setSystems(extractedSystems)
-        
-        console.log('Medications loaded successfully')
-        console.log('Categories:', extractedCategories.slice(0, 5))
-        console.log('Systems:', extractedSystems.slice(0, 5))
-        
-      } catch (error) {
-        console.error('Error loading medications:', error)
-        setError(error instanceof Error ? error.message : 'Failed to load medication database')
-      } finally {
-        setIsLoading(false)
+    const handleOnline = () => {
+      setIsOnline(true)
+      setError(null)
+      // Retry loading medications if we were offline
+      if (!medications.length && retryCount < 3) {
+        loadMedications()
       }
     }
     
+    const handleOffline = () => {
+      setIsOnline(false)
+      setError('No internet connection. Some features may be limited.')
+    }
+
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [medications.length, retryCount])
+
+  // Load medications from Supabase on app start
+  const loadMedications = async () => {
+    try {
+      setIsLoading(true)
+      setError(null)
+      
+      // Check online status first
+      if (!navigator.onLine) {
+        throw new Error('No internet connection. Please check your network and try again.')
+      }
+      
+      console.log(`Loading medications from Supabase... (attempt ${retryCount + 1})`)
+      
+      const drugs = await fetchAllDrugs()
+      
+      if (!drugs || drugs.length === 0) {
+        throw new Error('No medications found in database. Please contact support if this persists.')
+      }
+      
+      console.log(`Successfully loaded ${drugs.length} medications from Supabase`)
+      
+      // Convert to app format with error handling
+      try {
+        const convertedMedications = convertPediatricDrugsToMedications(drugs)
+        setMedications(convertedMedications)
+        
+        // Extract categories with error handling
+        const extractedCategories = extractCategoriesFromDrugs(drugs)
+        setCategories(extractedCategories)
+        
+        console.log('Medications processed successfully')
+        console.log('Available categories:', extractedCategories.slice(0, 5))
+        
+        // Reset retry count on success
+        setRetryCount(0)
+        
+      } catch (processingError) {
+        throw new Error('Failed to process medication data. The database may contain invalid entries.')
+      }
+      
+    } catch (error) {
+      const result = handleAsyncError(error, 'loadMedications')
+      console.error('Error loading medications:', result)
+      
+      // Set user-friendly error message
+      let errorMessage = 'Failed to load medication database'
+      
+      if (error instanceof Error) {
+        if (error.message.includes('fetch') || error.message.includes('network')) {
+          errorMessage = 'Network error: Unable to connect to medication database. Please check your internet connection.'
+        } else if (error.message.includes('No medications found')) {
+          errorMessage = 'Medication database is empty. Please contact support.'
+        } else if (error.message.includes('process')) {
+          errorMessage = 'Database error: Unable to process medication data. Please try again or contact support.'
+        } else {
+          errorMessage = error.message
+        }
+      }
+      
+      setError(errorMessage)
+      setRetryCount(prev => prev + 1)
+      
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => {
     loadMedications()
   }, [])
+
+  // Progress calculation based on current screen
+  useEffect(() => {
+    const progressMap: Record<Screen, number> = {
+      home: 0,
+      patient: 25,
+      medication: 50,
+      results: 100,
+      calculators: 0,
+      settings: 0
+    }
+    setProgress(progressMap[currentScreen] || 0)
+  }, [currentScreen])
 
   // Show loading screen while data loads
   if (isLoading) {
@@ -165,14 +236,34 @@ function AppContent() {
               <AlertTriangle className="h-8 w-8 text-red-600" />
             </div>
           </div>
-          <h2 className="text-xl font-bold text-gray-900 mb-2">Connection Error</h2>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">
+            {!isOnline ? 'No Internet Connection' : 'Connection Error'}
+          </h2>
           <p className="text-muted-foreground mb-4">{error}</p>
-          <Button 
-            onClick={() => window.location.reload()} 
-            className="bg-red-600 hover:bg-red-700"
-          >
-            Retry Connection
-          </Button>
+          <div className="flex items-center justify-center mb-4">
+            {isOnline ? <Wifi className="h-5 w-5 text-green-600 mr-2" /> : <WifiOff className="h-5 w-5 text-red-600 mr-2" />}
+            <span className={`text-sm ${isOnline ? 'text-green-600' : 'text-red-600'}`}>
+              {isOnline ? 'Connected' : 'Offline'}
+            </span>
+          </div>
+          <div className="space-y-2">
+            <Button 
+              onClick={() => loadMedications()} 
+              className="w-full bg-red-600 hover:bg-red-700"
+              disabled={!isOnline}
+            >
+              {!isOnline ? 'Waiting for Connection...' : retryCount > 0 ? `Retry (${retryCount + 1})` : 'Retry Connection'}
+            </Button>
+            {retryCount >= 3 && (
+              <Button 
+                variant="outline"
+                onClick={() => window.location.reload()} 
+                className="w-full"
+              >
+                Reload Application
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -187,84 +278,127 @@ function AppContent() {
     return <SettingsScreen onBack={() => setCurrentScreen('home')} />
   }
 
-  const displayCategories = ['ALL', ...categories.slice(0, 10)] // Show top 10 categories
-
-  // Progress calculation based on current screen
-  useEffect(() => {
-    const progressMap: Record<Screen, number> = {
-      home: 0,
-      patient: 25,
-      medication: 50,
-      results: 100,
-      calculators: 0,
-      settings: 0
-    }
-    setProgress(progressMap[currentScreen] || 0)
-  }, [currentScreen])
-
-  const filteredMedications = medications.filter(med => {
-    const matchesSearch = searchTerm === '' ? true : 
-      med.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      med.indication.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      med.class.toLowerCase().includes(searchTerm.toLowerCase())
-    const matchesCategory = selectedCategory === 'ALL' || med.category === selectedCategory
-    return matchesSearch && matchesCategory
-  })
-
-  const favoriteMedications = medications.filter(med => favorites.includes(med.id))
-
   const calculateDosage = () => {
-    if (!selectedMedication || !patientData.weight) return
-
-    const weight = parseFloat(patientData.weight)
-    const med = selectedMedication
-    
-    // Convert weight to kg if in lbs
-    const weightInKg = patientData.weightUnit === 'lbs' ? weight * 0.453592 : weight
-    
-    // Use the new medication database structure
-    const minDose = med.dosage.min_dose ? (med.dosage.min_dose * weightInKg) : 0
-    const maxDose = med.dosage.max_dose ? (med.dosage.max_dose * weightInKg) : minDose
-    const recommendedDose = maxDose > minDose ? (minDose + maxDose) / 2 : minDose
-
-    // Check if dose exceeds maximum
-    const maxDoseValue = med.max_dose.value || 1000
-    const isOverMax = recommendedDose > maxDoseValue
-
-    // Determine safety level
-    let safetyLevel: 'safe' | 'caution' | 'danger' = 'safe'
-    if (recommendedDose > maxDoseValue * 0.8) {
-      safetyLevel = isOverMax ? 'danger' : 'caution'
-    }
-
-    // Get concentration from dosage forms
-    const concentration = med.dosage_forms.length > 0 ? med.dosage_forms[0] : 'Standard dose'
-    
-    // Calculate volume for liquid medications (simplified)
-    let volume = ''
-    if (concentration.includes('mL') && concentration.includes('mg')) {
-      const match = concentration.match(/(\d+)\s*mg.*?(\d+)\s*mL/)
-      if (match) {
-        const mgPer = parseFloat(match[1])
-        const mlPer = parseFloat(match[2])
-        const volumeCalc = (recommendedDose / mgPer) * mlPer
-        volume = `${volumeCalc.toFixed(1)} mL`
+    try {
+      if (!selectedMedication || !patientData.weight || !patientData.age) {
+        setError('Missing required data for calculation. Please ensure patient age, weight, and medication are selected.')
+        return
       }
+
+      const med = selectedMedication
+      
+      // Validate patient data first
+      const validation = validatePatientData(
+        patientData.age,
+        patientData.ageUnit,
+        patientData.weight,
+        patientData.weightUnit
+      )
+      
+      setPatientValidation(validation)
+      
+      // If validation fails with errors, don't proceed
+      if (!validation.isValid) {
+        const errorMessage = `Patient data validation failed: ${validation.errors.join(', ')}`
+        setError(errorMessage)
+        console.error('Validation failed:', validation)
+        return
+      }
+      
+      // Validate medication data
+      if (!med.dosage || (!med.dosage.min_dose && !med.dosage.max_dose)) {
+        setError(`No dosage information available for ${med.name}. Please select a different medication or consult medical references.`)
+        return
+      }
+      
+      // Calculate dosage using safe calculation function
+      const dosePerKg = med.dosage.min_dose || med.dosage.max_dose || 10 // Fallback to 10mg/kg
+      const maxDoseValue = med.max_dose.value
+      
+      const safeCalculation = calculateSafeDosage(
+        {
+          age: patientData.age,
+          ageUnit: patientData.ageUnit,
+          weight: patientData.weight,
+          weightUnit: patientData.weightUnit
+        },
+        dosePerKg,
+        maxDoseValue,
+        med.name
+      )
+      
+      // Check if calculation succeeded
+      if (!safeCalculation.result || isNaN(safeCalculation.result)) {
+        throw new Error('Calculation failed to produce a valid result. Please check input values and try again.')
+      }
+      
+      // Calculate min and max doses with error handling
+      const weight = parseFloat(patientData.weight)
+      const weightInKg = patientData.weightUnit === 'lbs' ? weight * 0.453592 : weight
+      
+      if (weightInKg <= 0 || !isFinite(weightInKg)) {
+        throw new Error('Invalid weight value detected during calculation.')
+      }
+      
+      const minDose = med.dosage.min_dose ? (med.dosage.min_dose * weightInKg) : 0
+      const maxDose = med.dosage.max_dose ? (med.dosage.max_dose * weightInKg) : safeCalculation.result
+      
+      // Get concentration from dosage forms
+      const concentration = med.dosage_forms.length > 0 ? med.dosage_forms[0] : 'Standard dose'
+      
+      // Calculate volume for liquid medications (simplified)
+      let volume = ''
+      try {
+        if (concentration && concentration.includes('mL') && concentration.includes('mg')) {
+          const match = concentration.match(/(\d+)\s*mg.*?(\d+)\s*mL/)
+          if (match && match[1] && match[2]) {
+            const mgPer = parseFloat(match[1])
+            const mlPer = parseFloat(match[2])
+            
+            if (mgPer > 0 && mlPer > 0) {
+              const volumeCalc = (safeCalculation.result / mgPer) * mlPer
+              if (isFinite(volumeCalc) && volumeCalc > 0) {
+                volume = `${volumeCalc.toFixed(1)} mL`
+              }
+            }
+          }
+        }
+      } catch (volumeError) {
+        console.warn('Error calculating volume:', volumeError)
+        // Volume calculation error is non-critical, continue without volume
+      }
+      
+      // Determine if dose exceeds maximum
+      const isOverMax = maxDoseValue ? safeCalculation.result > maxDoseValue : false
+      
+      setCalculationResult({
+        dose: safeCalculation.result.toFixed(1),
+        minDose: minDose.toFixed(1),
+        maxDose: maxDose.toFixed(1),
+        safetyLevel: safeCalculation.validation.safetyLevel,
+        isOverMax,
+        concentration: concentration || 'Standard dose',
+        frequency: med.frequency,
+        medication: med.name,
+        volume,
+        validationErrors: safeCalculation.validation.errors,
+        validationWarnings: safeCalculation.warnings,
+        isRecommended: safeCalculation.isRecommended
+      })
+
+      // Clear any previous errors
+      setError(null)
+      setCurrentScreen('results')
+      
+    } catch (calculationError) {
+      const result = handleAsyncError(calculationError, 'calculateDosage')
+      const errorMessage = calculationError instanceof Error 
+        ? `Calculation error: ${calculationError.message}` 
+        : 'An unexpected error occurred during calculation. Please try again.'
+      
+      setError(errorMessage)
+      console.error('Dosage calculation failed:', result)
     }
-
-    setCalculationResult({
-      dose: recommendedDose.toFixed(1),
-      minDose: minDose.toFixed(1),
-      maxDose: maxDose.toFixed(1),
-      safetyLevel,
-      isOverMax,
-      concentration,
-      frequency: med.frequency,
-      medication: med.name,
-      volume
-    })
-
-    setCurrentScreen('results')
   }
 
   const resetCalculation = () => {
@@ -272,6 +406,7 @@ function AppContent() {
     setSelectedMedication(null)
     setCalculationResult(null)
     setSearchTerm('')
+    setPatientValidation(null)
     setCurrentScreen('home')
   }
 
@@ -287,567 +422,103 @@ function AppContent() {
     setCurrentScreen(screenFlow[currentScreen])
   }
 
-  const HomeScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 safe-area-inset">
-      <div className="mx-auto max-w-md px-6 py-8">
-        {/* Header */}
-        <div className="mb-12 pt-8 text-center">
-          <div className="mb-4 flex justify-center">
-            <div className="rounded-2xl bg-primary/10 p-4">
-              <Stethoscope className="h-8 w-8 text-primary" />
-            </div>
-          </div>
-          <h1 className="mb-2 text-4xl font-bold text-primary">PediCalc</h1>
-          <p className="text-lg text-muted-foreground">Pediatric Drug Calculator</p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Safe. Accurate. Professional.
-          </p>
-        </div>
 
-        {/* Main Actions */}
-        <div className="space-y-4">
-          <Card 
-            className="group cursor-pointer border-0 bg-white/80 shadow-lg backdrop-blur-sm transition-all duration-300 hover:shadow-xl hover:-translate-y-1 haptic-tap" 
-            onClick={() => setCurrentScreen('patient')}
-          >
-            <CardContent className="flex items-center p-6">
-              <div className="mr-4 rounded-full bg-primary/10 p-3 transition-colors group-hover:bg-primary/20">
-                <Plus className="h-6 w-6 text-primary" />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-gray-900">New Calculation</h3>
-                <p className="text-sm text-muted-foreground">Calculate pediatric dosages safely</p>
-              </div>
-              <div className="rounded-full bg-primary/5 p-2">
-                <Calculator className="h-4 w-4 text-primary" />
-              </div>
-            </CardContent>
-          </Card>
 
-          <Card className="group cursor-pointer border-0 bg-white/80 shadow-lg backdrop-blur-sm transition-all duration-300 hover:shadow-xl hover:-translate-y-1 haptic-tap">
-            <CardContent className="flex items-center p-6">
-              <div className="mr-4 rounded-full bg-blue-100 p-3 transition-colors group-hover:bg-blue-200">
-                <Clock className="h-6 w-6 text-blue-600" />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-gray-900">Recent Calculations</h3>
-                <p className="text-sm text-muted-foreground">View calculation history</p>
-              </div>
-              <Badge variant="secondary" className="text-xs">5</Badge>
-            </CardContent>
-          </Card>
 
-          <Card className="group cursor-pointer border-0 bg-white/80 shadow-lg backdrop-blur-sm transition-all duration-300 hover:shadow-xl hover:-translate-y-1 haptic-tap">
-            <CardContent className="flex items-center p-6">
-              <div className="mr-4 rounded-full bg-green-100 p-3 transition-colors group-hover:bg-green-200">
-                <Pill className="h-6 w-6 text-green-600" />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-gray-900">Drug Reference</h3>
-                <p className="text-sm text-muted-foreground">Browse medication database</p>
-              </div>
-              <Badge variant="secondary" className="text-xs">{medications.length}</Badge>
-            </CardContent>
-          </Card>
-        </div>
 
-        {/* Quick Stats */}
-        <div className="mt-8 rounded-2xl bg-white/50 p-6 backdrop-blur-sm">
-          <h4 className="mb-4 font-semibold text-gray-900">Quick Stats</h4>
-          <div className="grid grid-cols-3 gap-4 text-center">
-            <div>
-              <div className="text-2xl font-bold text-primary">{medications.length}</div>
-              <div className="text-xs text-muted-foreground">Medications</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-green-600">99.9%</div>
-              <div className="text-xs text-muted-foreground">Accuracy</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-blue-600">24/7</div>
-              <div className="text-xs text-muted-foreground">Available</div>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Bottom Navigation */}
-      <BottomNavigation active="home" />
-    </div>
-  )
 
-  const PatientInputScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 safe-area-inset">
-      <div className="mx-auto max-w-md px-6 py-6">
-        {/* Header */}
-        <div className="mb-6 flex items-center">
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={goBack}
-            className="mr-3 h-10 w-10 rounded-full p-0 haptic-tap"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div className="flex-1">
-            <h2 className="text-xl font-bold text-gray-900">Patient Information</h2>
-            <p className="text-sm text-muted-foreground">Enter patient details</p>
-          </div>
-        </div>
 
-        {/* Progress */}
-        <div className="mb-8">
-          <Progress value={progress} className="mb-2 h-2" />
-          <p className="text-xs text-muted-foreground">Step 1 of 3</p>
-        </div>
 
-        {/* Form */}
-        <div className="space-y-8">
-          <Card className="border-0 bg-white/80 shadow-lg backdrop-blur-sm">
-            <CardContent className="p-6">
-              <Label htmlFor="age" className="mb-4 block text-base font-medium">Patient Age</Label>
-              <div className="flex gap-3">
-                <Input
-                  id="age"
-                  type="number"
-                  placeholder="5"
-                  value={patientData.age}
-                  onChange={(e) => setPatientData({...patientData, age: e.target.value})}
-                  className="flex-1 h-14 text-lg text-center border-2 border-primary/20 focus:border-primary"
-                />
-                <Select 
-                  value={patientData.ageUnit} 
-                  onValueChange={(value: 'years' | 'months' | 'days') => 
-                    setPatientData({...patientData, ageUnit: value})
-                  }
-                >
-                  <SelectTrigger className="w-28 h-14 border-2 border-primary/20 focus:border-primary">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="years">years</SelectItem>
-                    <SelectItem value="months">months</SelectItem>
-                    <SelectItem value="days">days</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
 
-          <Card className="border-0 bg-white/80 shadow-lg backdrop-blur-sm">
-            <CardContent className="p-6">
-              <Label htmlFor="weight" className="mb-4 block text-base font-medium">Patient Weight</Label>
-              <div className="flex gap-3">
-                <Input
-                  id="weight"
-                  type="number"
-                  step="0.1"
-                  placeholder="18.0"
-                  value={patientData.weight}
-                  onChange={(e) => setPatientData({...patientData, weight: e.target.value})}
-                  className="flex-1 h-14 text-lg text-center border-2 border-primary/20 focus:border-primary"
-                />
-                <Select 
-                  value={patientData.weightUnit} 
-                  onValueChange={(value: 'kg' | 'lbs') => 
-                    setPatientData({...patientData, weightUnit: value})
-                  }
-                >
-                  <SelectTrigger className="w-20 h-14 border-2 border-primary/20 focus:border-primary">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="kg">kg</SelectItem>
-                    <SelectItem value="lbs">lbs</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
 
-        {/* Action Buttons */}
-        <div className="fixed bottom-6 left-6 right-6">
-          <div className="mx-auto max-w-md space-y-3">
-            <Button 
-              className="h-14 w-full text-lg font-medium shadow-lg haptic-tap" 
-              onClick={() => setCurrentScreen('medication')}
-              disabled={!patientData.age || !patientData.weight}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
 
-  const MedicationSelectionScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 safe-area-inset pb-24">
-      <div className="mx-auto max-w-md px-6 py-6">
-        {/* Header */}
-        <div className="mb-6 flex items-center">
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={goBack}
-            className="mr-3 h-10 w-10 rounded-full p-0 haptic-tap"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div className="flex-1">
-            <h2 className="text-xl font-bold text-gray-900">Select Medication</h2>
-            <p className="text-sm text-muted-foreground">Choose the medication</p>
-          </div>
-        </div>
 
-        {/* Progress */}
-        <div className="mb-6">
-          <Progress value={progress} className="mb-2 h-2" />
-          <p className="text-xs text-muted-foreground">Step 2 of 3</p>
-        </div>
-
-        {/* Search */}
-        <div className="relative mb-6">
-          <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search medications..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-12 pl-12 border-2 border-primary/20 focus:border-primary"
-          />
-        </div>
-
-        {/* Category Filter */}
-        <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
-          {displayCategories.map(category => (
-            <Button
-              key={category}
-              variant={selectedCategory === category ? "default" : "outline"}
-              size="sm"
-              onClick={() => setSelectedCategory(category)}
-              className="whitespace-nowrap haptic-tap"
-            >
-              {category}
-            </Button>
-          ))}
-        </div>
-
-        {/* Favorites */}
-        {searchTerm === '' && selectedCategory === 'ALL' && favoriteMedications.length > 0 && (
-          <div className="mb-6">
-            <div className="mb-3 flex items-center gap-2">
-              <Heart className="h-4 w-4 text-red-500" />
-              <h3 className="font-medium text-gray-900">Favorites</h3>
-            </div>
-            <div className="space-y-2">
-              {favoriteMedications.map(med => (
-                <MedicationCard key={`fav-${med.id}`} medication={med} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Medications List */}
-        <div className="space-y-3">
-          {selectedCategory !== 'ALL' && (
-            <h3 className="font-medium text-gray-900">{selectedCategory}</h3>
-          )}
-          {filteredMedications.length === 0 ? (
-            <div className="text-center py-8">
-              <div className="mb-2 text-gray-400">
-                <Search className="h-8 w-8 mx-auto" />
-              </div>
-              <p className="text-gray-600">No medications found</p>
-              <p className="text-sm text-gray-400 mt-1">
-                {searchTerm ? `Try different search terms` : 'Try selecting a different category'}
-              </p>
-            </div>
-          ) : (
-            filteredMedications.map(med => (
-              <MedicationCard key={med.id} medication={med} />
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="fixed bottom-6 left-6 right-6">
-        <div className="mx-auto max-w-md">
-          <Button 
-            className="h-14 w-full text-lg font-medium shadow-lg haptic-tap" 
-            onClick={calculateDosage}
-            disabled={!selectedMedication}
-          >
-            Calculate Dosage
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-
-  const MedicationCard = ({ medication }: { medication: Medication }) => (
-    <Card 
-      className={`cursor-pointer border-2 transition-all duration-200 haptic-tap ${
-        selectedMedication?.id === medication.id 
-          ? 'border-primary bg-primary/5 shadow-lg' 
-          : 'border-gray-200 bg-white/80 hover:shadow-md hover:border-primary/50'
-      }`}
-      onClick={() => setSelectedMedication(medication)}
-    >
-      <CardContent className="p-4">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            <div className="rounded-full bg-primary/10 p-2">
-              <Pill className="h-4 w-4 text-primary" />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-gray-900">{medication.name}</h3>
-              <p className="text-sm text-muted-foreground">
-                {medication.dosage_forms.join(', ')}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {medication.indication} • {medication.class}
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            <Badge variant="secondary" className="text-xs">
-              {medication.category}
-            </Badge>
-            <Badge variant="outline" className="text-xs">
-              {medication.system}
-            </Badge>
-            {favorites.includes(medication.id) && (
-              <Heart className="h-3 w-3 fill-red-500 text-red-500" />
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
-
-  const ResultsScreen = () => {
-    if (!calculationResult) return null
-
-    const getSafetyColor = (level: string) => {
-      switch(level) {
-        case 'safe': return 'text-green-600'
-        case 'caution': return 'text-orange-600'
-        case 'danger': return 'text-red-600'
-        default: return 'text-gray-600'
-      }
+  const handleNavigate = (screen: 'patient' | 'calculators' | 'settings') => {
+    if (screen === 'patient') {
+      setCurrentScreen('patient')
+    } else {
+      setCurrentScreen(screen)
     }
-
-    const getSafetyBgColor = (level: string) => {
-      switch(level) {
-        case 'safe': return 'bg-green-50 border-green-200'
-        case 'caution': return 'bg-orange-50 border-orange-200'
-        case 'danger': return 'bg-red-50 border-red-200'
-        default: return 'bg-gray-50 border-gray-200'
-      }
-    }
-
-    const getSafetyIcon = (level: string) => {
-      switch(level) {
-        case 'safe': return <CheckCircle className="h-6 w-6 text-green-600" />
-        case 'caution': return <AlertTriangle className="h-6 w-6 text-orange-600" />
-        case 'danger': return <AlertTriangle className="h-6 w-6 text-red-600" />
-        default: return null
-      }
-    }
-
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 safe-area-inset pb-24">
-        <div className="mx-auto max-w-md px-6 py-6">
-          {/* Header */}
-          <div className="mb-6 flex items-center">
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={goBack}
-              className="mr-3 h-10 w-10 rounded-full p-0 haptic-tap"
-            >
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <div className="flex-1">
-              <h2 className="text-xl font-bold text-gray-900">Calculation Results</h2>
-              <p className="text-sm text-muted-foreground">Review the dosage</p>
-            </div>
-          </div>
-
-          {/* Progress */}
-          <div className="mb-8">
-            <Progress value={progress} className="mb-2 h-2" />
-            <p className="text-xs text-muted-foreground">Step 3 of 3</p>
-          </div>
-
-          {/* Main Result Card */}
-          <Card className={`mb-6 border-2 ${getSafetyBgColor(calculationResult.safetyLevel)}`}>
-            <CardContent className="p-8 text-center">
-              <div className="mb-4">
-                <div className="mb-2 text-5xl font-bold text-gray-900">
-                  {calculationResult.dose}
-                  <span className="text-2xl text-muted-foreground ml-1">mg</span>
-                </div>
-                <div className="text-lg text-muted-foreground">
-                  {calculationResult.concentration}
-                </div>
-                {calculationResult.volume && (
-                  <div className="text-sm text-muted-foreground mt-1">
-                    Volume: {calculationResult.volume}
-                  </div>
-                )}
-              </div>
-
-              {/* Safety Indicator */}
-              <div className="mb-6">
-                <div className="mb-3 flex items-center justify-center gap-2">
-                  {getSafetyIcon(calculationResult.safetyLevel)}
-                  <span className={`font-medium ${getSafetyColor(calculationResult.safetyLevel)}`}>
-                    {calculationResult.safetyLevel.charAt(0).toUpperCase() + calculationResult.safetyLevel.slice(1)} Range
-                  </span>
-                </div>
-                
-                {/* Safety Bar */}
-                <div className="relative mx-auto h-4 w-full rounded-full bg-gray-200 overflow-hidden">
-                  <div className="absolute left-0 h-full w-1/3 bg-green-400"></div>
-                  <div className="absolute left-1/3 h-full w-1/3 bg-orange-400"></div>
-                  <div className="absolute right-0 h-full w-1/3 bg-red-400"></div>
-                  <div 
-                    className="absolute h-6 w-1 bg-gray-900 rounded-sm transform -translate-x-1/2 -translate-y-1"
-                    style={{ 
-                      left: calculationResult.safetyLevel === 'safe' ? '20%' : 
-                             calculationResult.safetyLevel === 'caution' ? '50%' : '80%' 
-                    }}
-                  ></div>
-                </div>
-                <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-                  <span>Low ({calculationResult.minDose} mg)</span>
-                  <span>High ({calculationResult.maxDose} mg)</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Administration Instructions */}
-          <Card className="mb-6 border-0 bg-white/80 shadow-lg backdrop-blur-sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Stethoscope className="h-5 w-5 text-primary" />
-                Administration
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <div>
-                  <p className="font-medium text-gray-900">
-                    Give {calculationResult.dose} mg
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {calculationResult.concentration}
-                    {calculationResult.volume && ` (${calculationResult.volume})`}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">
-                    Frequency: <span className="font-medium text-gray-900">{calculationResult.frequency}</span>
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Warning Alert */}
-          {calculationResult.isOverMax && (
-            <Alert className="mb-6 border-red-200 bg-red-50">
-              <AlertTriangle className="h-4 w-4 text-red-600" />
-              <AlertDescription className="text-red-800">
-                <strong>Warning:</strong> Calculated dose exceeds recommended maximum. 
-                Consider reducing the dose or consulting a specialist.
-              </AlertDescription>
-            </Alert>
-          )}
-        </div>
-
-        {/* Action Buttons */}
-        <div className="fixed bottom-6 left-6 right-6">
-          <div className="mx-auto max-w-md space-y-3">
-            <Button className="h-14 w-full text-lg font-medium shadow-lg bg-green-600 hover:bg-green-700 haptic-tap">
-              Confirm Calculation
-            </Button>
-            <div className="flex gap-3">
-              <Button 
-                variant="outline" 
-                className="h-12 flex-1 haptic-tap" 
-                onClick={() => setCurrentScreen('medication')}
-              >
-                Recalculate
-              </Button>
-              <Button 
-                variant="outline" 
-                className="h-12 flex-1 haptic-tap" 
-                onClick={resetCalculation}
-              >
-                New Patient
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )
   }
-
-  const BottomNavigation = ({ active }: { active: string }) => (
-    <div className="fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white/80 backdrop-blur-sm safe-area-inset">
-      <div className="mx-auto flex max-w-md justify-around py-3">
-        <Button 
-          variant="ghost" 
-          className={`flex h-12 w-12 flex-col items-center justify-center gap-1 p-0 haptic-tap ${
-            active === 'home' ? 'text-primary' : 'text-muted-foreground'
-          }`}
-        >
-          <Home className="h-5 w-5" />
-          <span className="text-xs">Home</span>
-        </Button>
-        <Button 
-          variant="ghost" 
-          className={`flex h-12 w-12 flex-col items-center justify-center gap-1 p-0 haptic-tap ${
-            active === 'calculators' ? 'text-primary' : 'text-muted-foreground'
-          }`}
-          onClick={() => setCurrentScreen('calculators')}
-        >
-          <Calculator className="h-5 w-5" />
-          <span className="text-xs">Calculators</span>
-        </Button>
-        <Button 
-          variant="ghost" 
-          className={`flex h-12 w-12 flex-col items-center justify-center gap-1 p-0 haptic-tap ${
-            active === 'settings' ? 'text-primary' : 'text-muted-foreground'
-          }`}
-          onClick={() => setCurrentScreen('settings')}
-        >
-          <Settings className="h-5 w-5" />
-          <span className="text-xs">Settings</span>
-        </Button>
-      </div>
-    </div>
-  )
 
   const renderScreen = () => {
     switch(currentScreen) {
-      case 'home': return <HomeScreen />
-      case 'patient': return <PatientInputScreen />
-      case 'medication': return <MedicationSelectionScreen />
-      case 'results': return <ResultsScreen />
-      default: return <HomeScreen />
+      case 'home': 
+        return (
+          <HomeScreen 
+            medicationsCount={medications.length}
+            onNavigate={handleNavigate}
+          />
+        )
+      case 'patient': 
+        return (
+          <PatientInputScreen 
+            patientData={patientData}
+            progress={progress}
+            patientValidation={patientValidation}
+            onPatientDataChange={setPatientData}
+            onValidationChange={setPatientValidation}
+            onNext={() => setCurrentScreen('medication')}
+            onBack={goBack}
+          />
+        )
+      case 'medication': 
+        return (
+          <MedicationSelectionScreen 
+            searchTerm={searchTerm}
+            selectedCategory={selectedCategory}
+            selectedMedication={selectedMedication}
+            progress={progress}
+            categories={categories}
+            medications={medications}
+            favorites={favorites}
+            onSearchChange={setSearchTerm}
+            onCategoryChange={setSelectedCategory}
+            onMedicationSelect={setSelectedMedication}
+            onCalculate={calculateDosage}
+            onBack={goBack}
+          />
+        )
+      case 'results': 
+        return calculationResult ? (
+          <ResultsScreen 
+            calculationResult={calculationResult}
+            progress={progress}
+            onBack={goBack}
+            onRecalculate={() => setCurrentScreen('medication')}
+            onNewPatient={resetCalculation}
+          />
+        ) : null
+      default: 
+        return (
+          <HomeScreen 
+            medicationsCount={medications.length}
+            onNavigate={handleNavigate}
+          />
+        )
     }
   }
 
   return (
-    <div className="font-sans antialiased">
-      {renderScreen()}
-      <InstallPrompt />
-    </div>
+    <ErrorBoundary>
+      <div className="font-sans antialiased">
+        <SimpleErrorBoundary message="Failed to load screen">
+          {renderScreen()}
+        </SimpleErrorBoundary>
+        
+        <SimpleErrorBoundary message="Install prompt failed">
+          <InstallPrompt />
+        </SimpleErrorBoundary>
+        
+        <SimpleErrorBoundary message="Medical disclaimer failed">
+          <MedicalDisclaimer 
+            isOpen={needsDisclaimer}
+            onAccept={acceptDisclaimer}
+            onDecline={declineDisclaimer}
+          />
+        </SimpleErrorBoundary>
+      </div>
+    </ErrorBoundary>
   )
 }

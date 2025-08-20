@@ -176,7 +176,7 @@ function parseRoutes(routeString: string): string[] {
   
   const routes = routeString
     .toUpperCase()
-    .split(/[\/,\s]+/)
+    .split(/[/,\s]+/)
     .map(route => route.trim())
     .filter(route => route.length > 0)
 

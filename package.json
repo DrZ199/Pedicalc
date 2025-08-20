@@ -1,13 +1,31 @@
 {
-  "name": "vite-template",
+  "name": "pedicalc",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "description": "Professional pediatric drug dosage calculator PWA for healthcare providers",
+  "author": "DrZ199",
+  "license": "MIT",
+  "keywords": ["pediatric", "medical", "calculator", "dosage", "healthcare", "pwa"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DrZ199/Pedicalc"
+  },
+  "homepage": "https://github.com/DrZ199/Pedicalc",
+  "bugs": {
+    "url": "https://github.com/DrZ199/Pedicalc/issues"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "lint:fix": "eslint . --fix",
+    "type-check": "tsc --noEmit",
+    "preview": "vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:supabase": "node test-supabase.js",
+    "clean": "rm -rf dist",
+    "format": "prettier --write src/"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.832.0",
@@ -67,11 +85,12 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
-    "@eslint/js": "^9.25.0",
+    "@eslint/js": "^9.33.0",
     "@types/node": "^22.15.21",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.4.1",
+    "dotenv": "^17.2.1",
     "esbuild": "^0.25.5",
     "eslint": "^9.25.0",
     "eslint-plugin-react-hooks": "^5.2.0",
