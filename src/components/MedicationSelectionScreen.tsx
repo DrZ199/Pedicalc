@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { ArrowLeft, Search, Heart, Pill, AlertTriangle, DatabaseX } from 'lucide-react'
+import { ArrowLeft, Search, Heart, Pill, AlertTriangle, Database } from 'lucide-react'
 import { type Medication } from '@/lib/medication-database'
 import { SimpleErrorBoundary } from '@/components/ErrorBoundary'
 
@@ -46,7 +46,7 @@ export function MedicationSelectionScreen({
         <div className="text-center max-w-md">
           <div className="mb-4 flex justify-center">
             <div className="rounded-2xl bg-orange-100 p-4">
-              <DatabaseX className="h-8 w-8 text-orange-600" />
+              <Database className="h-8 w-8 text-orange-600" />
             </div>
           </div>
           <h2 className="text-xl font-bold text-gray-900 mb-2">No Medications Available</h2>
