@@ -1,74 +1,16 @@
-const CACHE_NAME = 'pedicalc-v1.0.0';
+const CACHE_NAME = 'pedicalc-v1.2.0';
 const STATIC_CACHE_URLS = [
   '/',
   '/manifest.json',
   '/icons/icon-192x192.png',
-  '/icons/icon-512x512.png'
+  '/icons/icon-512x512.png',
+  '/offline.html'
 ];
 
-// Cache medication data for offline use
-const MEDICATION_DATA = [
-  {
-    id: 1,
-    name: 'Amoxicillin',
-    category: 'Antibiotics',
-    concentrations: ['125 mg/5 mL', '200 mg/5 mL'],
-    dosage: { min: 20, max: 40, unit: 'mg/kg/day' },
-    frequency: 'Every 8 hours',
-    maxDose: '1000 mg/dose',
-    description: 'Beta-lactam antibiotic for bacterial infections'
-  },
-  {
-    id: 2,
-    name: 'Azithromycin',
-    category: 'Antibiotics',
-    concentrations: ['100 mg/5 mL', '200 mg/5 mL'],
-    dosage: { min: 10, max: 12, unit: 'mg/kg/day' },
-    frequency: 'Once daily',
-    maxDose: '500 mg/dose',
-    description: 'Macrolide antibiotic for respiratory infections'
-  },
-  {
-    id: 3,
-    name: 'Ibuprofen',
-    category: 'Analgesics',
-    concentrations: ['50 mg/1.25 mL', '100 mg/5 mL'],
-    dosage: { min: 5, max: 10, unit: 'mg/kg/dose' },
-    frequency: 'Every 6-8 hours',
-    maxDose: '400 mg/dose',
-    description: 'NSAID for pain and inflammation'
-  },
-  {
-    id: 4,
-    name: 'Ceftriaxone',
-    category: 'Antibiotics',
-    concentrations: ['500 mg'],
-    dosage: { min: 50, max: 100, unit: 'mg/kg/day' },
-    frequency: 'Once daily',
-    maxDose: '2000 mg/dose',
-    description: 'Third-generation cephalosporin'
-  },
-  {
-    id: 5,
-    name: 'Acetaminophen',
-    category: 'Analgesics',
-    concentrations: ['80 mg/0.8 mL', '160 mg/5 mL'],
-    dosage: { min: 10, max: 15, unit: 'mg/kg/dose' },
-    frequency: 'Every 4-6 hours',
-    maxDose: '650 mg/dose',
-    description: 'Analgesic and antipyretic'
-  },
-  {
-    id: 6,
-    name: 'Prednisolone',
-    category: 'Corticosteroids',
-    concentrations: ['15 mg/5 mL'],
-    dosage: { min: 1, max: 2, unit: 'mg/kg/day' },
-    frequency: 'Twice daily',
-    maxDose: '40 mg/dose',
-    description: 'Anti-inflammatory corticosteroid'
-  }
-];
+// Dynamic cache for Supabase data
+let CACHED_MEDICATIONS = null;
+let CACHE_TIMESTAMP = null;
+const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
 // Install event - cache static assets
 self.addEventListener('install', (event) => {
@@ -81,12 +23,6 @@ self.addEventListener('install', (event) => {
       })
       .then(() => {
         console.log('PediCalc SW: Static assets cached');
-        // Cache medication data
-        return caches.open(CACHE_NAME).then(cache => {
-          cache.put('/api/medications', new Response(JSON.stringify(MEDICATION_DATA), {
-            headers: { 'Content-Type': 'application/json' }
-          }));
-        });
       })
       .then(() => self.skipWaiting())
   );
@@ -111,17 +47,10 @@ self.addEventListener('activate', (event) => {
 
 // Fetch event - serve from cache with network fallback
 self.addEventListener('fetch', (event) => {
-  // Handle medication API requests
-  if (event.request.url.includes('/api/medications')) {
+  // Handle Supabase API requests
+  if (event.request.url.includes('supabase.co') || event.request.url.includes('/rest/v1/')) {
     event.respondWith(
-      caches.match('/api/medications')
-        .then(cachedResponse => {
-          if (cachedResponse) {
-            return cachedResponse;
-          }
-          // Fallback to network if not in cache
-          return fetch(event.request);
-        })
+      handleSupabaseRequest(event.request)
     );
     return;
   }
@@ -157,20 +86,33 @@ self.addEventListener('fetch', (event) => {
           .catch(() => {
             // If both cache and network fail, show offline page for navigation requests
             if (event.request.destination === 'document') {
-              return caches.match('/');
+              return caches.match('/offline.html').then(offlinePage => {
+                return offlinePage || caches.match('/');
+              });
             }
           });
       })
   );
 });
 
-// Background sync for calculation history (future feature)
+// Background sync for calculation history and cache refresh
 self.addEventListener('sync', (event) => {
   if (event.tag === 'sync-calculations') {
-    console.log('PediCalc SW: Background sync triggered');
+    console.log('PediCalc SW: Background sync for calculations triggered');
     // Handle background sync for calculation history
+    event.waitUntil(syncCalculationHistory());
+  }
+  
+  if (event.tag === 'refresh-medications') {
+    console.log('PediCalc SW: Background medication refresh triggered');
+    event.waitUntil(refreshMedicationCache());
   }
 });
+
+async function syncCalculationHistory() {
+  // Future implementation for syncing calculation history
+  console.log('PediCalc SW: Syncing calculation history (placeholder)');
+}
 
 // Push notifications for important updates (future feature)
 self.addEventListener('push', (event) => {
@@ -210,3 +152,67 @@ self.addEventListener('notificationclick', (event) => {
     );
   }
 });
+
+// Handle Supabase requests with smart caching
+async function handleSupabaseRequest(request) {
+  try {
+    // Try network first for fresh data
+    const networkResponse = await fetch(request.clone());
+    
+    if (networkResponse.ok) {
+      // Cache the response
+      const cache = await caches.open(CACHE_NAME);
+      cache.put(request, networkResponse.clone());
+      
+      // Update timestamp for data freshness
+      CACHE_TIMESTAMP = Date.now();
+      
+      return networkResponse;
+    }
+  } catch (error) {
+    console.log('PediCalc SW: Network failed, trying cache', error);
+  }
+  
+  // Fallback to cache
+  const cachedResponse = await caches.match(request);
+  if (cachedResponse) {
+    console.log('PediCalc SW: Serving from cache');
+    return cachedResponse;
+  }
+  
+  // If no cache available, return error response
+  return new Response(
+    JSON.stringify({ error: 'Network unavailable and no cached data' }),
+    {
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: { 'Content-Type': 'application/json' }
+    }
+  );
+}
+
+// Periodic cache cleanup and refresh
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'REFRESH_CACHE') {
+    event.waitUntil(refreshMedicationCache());
+  }
+  
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+async function refreshMedicationCache() {
+  console.log('PediCalc SW: Refreshing medication cache');
+  const cache = await caches.open(CACHE_NAME);
+  
+  // Clear old medication data
+  const keys = await cache.keys();
+  for (const key of keys) {
+    if (key.url.includes('supabase.co') || key.url.includes('/rest/v1/')) {
+      await cache.delete(key);
+    }
+  }
+  
+  CACHE_TIMESTAMP = Date.now();
+}
