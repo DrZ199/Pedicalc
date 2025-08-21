@@ -208,19 +208,26 @@ function AppContent() {
   // Show loading screen while data loads
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="mb-4 flex justify-center">
-            <div className="rounded-2xl bg-primary/10 p-4">
-              <Stethoscope className="h-8 w-8 text-primary animate-pulse" />
+      <div className="min-h-screen bg-gradient-medical-hero relative overflow-hidden flex items-center justify-center">
+        {/* Background Effects */}
+        <div className="absolute inset-0 bg-gradient-to-br from-blue-600/10 via-transparent to-purple-600/5" />
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-400/10 rounded-full blur-3xl" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-400/5 rounded-full blur-3xl" />
+        
+        <div className="glass-card p-10 text-center max-w-sm mx-4">
+          <div className="mb-6 flex justify-center">
+            <div className="glass-card p-6 glow-primary floating">
+              <Stethoscope className="h-10 w-10 text-primary pulse-glow" />
             </div>
           </div>
-          <h2 className="text-xl font-bold text-gray-900 mb-2">Loading PediCalc</h2>
-          <p className="text-muted-foreground mb-4">Loading comprehensive drug database...</p>
-          <div className="w-48 mx-auto">
-            <Progress value={75} className="h-2" />
+          <h2 className="text-2xl font-bold bg-gradient-to-r from-primary to-blue-600 bg-clip-text text-transparent mb-2">
+            Loading PediCalc
+          </h2>
+          <p className="text-muted-foreground mb-6">Loading comprehensive drug database...</p>
+          <div className="w-full mx-auto mb-4">
+            <Progress value={75} className="h-3 progress-medical" />
           </div>
-          <p className="text-xs text-muted-foreground mt-2">510 medications ready</p>
+          <p className="text-sm text-muted-foreground font-medium">510 medications ready</p>
         </div>
       </div>
     )
@@ -229,28 +236,34 @@ function AppContent() {
   // Show error screen if loading failed
   if (error) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-red-50 via-white to-red-50 flex items-center justify-center px-6">
-        <div className="text-center max-w-md">
-          <div className="mb-4 flex justify-center">
-            <div className="rounded-2xl bg-red-100 p-4">
-              <AlertTriangle className="h-8 w-8 text-red-600" />
+      <div className="min-h-screen bg-gradient-to-br from-red-50 via-red-25 to-orange-50 dark:from-red-950 dark:via-red-900 dark:to-orange-950 relative overflow-hidden flex items-center justify-center px-6">
+        {/* Background Effects */}
+        <div className="absolute inset-0 bg-gradient-to-br from-red-600/10 via-transparent to-orange-600/5" />
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-red-400/10 rounded-full blur-3xl" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-orange-400/5 rounded-full blur-3xl" />
+        
+        <div className="glass-card p-8 text-center max-w-md">
+          <div className="mb-6 flex justify-center">
+            <div className="glass-card p-6 bg-red-500/10 border-red-500/20">
+              <AlertTriangle className="h-10 w-10 text-red-600 dark:text-red-400" />
             </div>
           </div>
-          <h2 className="text-xl font-bold text-gray-900 mb-2">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">
             {!isOnline ? 'No Internet Connection' : 'Connection Error'}
           </h2>
-          <p className="text-muted-foreground mb-4">{error}</p>
-          <div className="flex items-center justify-center mb-4">
+          <p className="text-muted-foreground mb-6 leading-relaxed">{error}</p>
+          <div className="flex items-center justify-center mb-6 glass-card px-4 py-2 w-fit mx-auto">
             {isOnline ? <Wifi className="h-5 w-5 text-green-600 mr-2" /> : <WifiOff className="h-5 w-5 text-red-600 mr-2" />}
-            <span className={`text-sm ${isOnline ? 'text-green-600' : 'text-red-600'}`}>
+            <span className={`text-sm font-medium ${isOnline ? 'text-green-600' : 'text-red-600'}`}>
               {isOnline ? 'Connected' : 'Offline'}
             </span>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-3">
             <Button 
               onClick={() => loadMedications()} 
-              className="w-full bg-red-600 hover:bg-red-700"
+              className="w-full bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-lg"
               disabled={!isOnline}
+              size="lg"
             >
               {!isOnline ? 'Waiting for Connection...' : retryCount > 0 ? `Retry (${retryCount + 1})` : 'Retry Connection'}
             </Button>
@@ -259,6 +272,7 @@ function AppContent() {
                 variant="outline"
                 onClick={() => window.location.reload()} 
                 className="w-full"
+                size="lg"
               >
                 Reload Application
               </Button>

@@ -82,9 +82,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('pedicalc-settings', JSON.stringify(settings))
   }, [settings])
 
-  // Apply theme to document
+  // Apply theme to document with smooth transitions
   useEffect(() => {
     const root = document.documentElement
+    
+    // Add transition class for smooth theme changes
+    root.style.transition = 'background-color 0.3s ease, color 0.3s ease'
     
     if (settings.theme === 'dark') {
       root.classList.add('dark')
@@ -93,17 +96,31 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     } else {
       // Auto theme
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const handleChange = (e: MediaQueryListEvent) => {
+        if (settings.theme === 'auto') {
+          if (e.matches) {
+            root.classList.add('dark')
+          } else {
+            root.classList.remove('dark')
+          }
+        }
+      }
+      
       if (mediaQuery.matches) {
         root.classList.add('dark')
       } else {
         root.classList.remove('dark')
       }
+      
+      mediaQuery.addEventListener('change', handleChange)
+      return () => mediaQuery.removeEventListener('change', handleChange)
     }
   }, [settings.theme])
 
-  // Apply font size
+  // Apply font size with smooth transitions
   useEffect(() => {
     const root = document.documentElement
+    root.style.transition = 'font-size 0.3s ease'
     root.classList.remove('text-small', 'text-medium', 'text-large')
     root.classList.add(`text-${settings.fontSize}`)
   }, [settings.fontSize])
